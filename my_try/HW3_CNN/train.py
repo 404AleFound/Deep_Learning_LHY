@@ -21,6 +21,7 @@ def train(train_set, val_set, train_dataloader, val_dataloader, config, model, d
                                  weight_decay=config['weight_decay'])
     best_acc, best_loss = 0.0, 0.0
     early_stop_count = 0
+    step = 0
     writer = SummaryWriter()
 
     for epoch in range(config['num_epoch']):
@@ -29,7 +30,9 @@ def train(train_set, val_set, train_dataloader, val_dataloader, config, model, d
         val_acc, val_loss = 0.0, 0.0
         
         # strat training
+
         model.train()
+        train_loss_epochs, train_acc_epochs = [], []
         for imgs, labels in tqdm(train_dataloader, position=0, leave=True):
             imgs = imgs.to(device)
             labels = labels.to(device)
@@ -60,13 +63,11 @@ def train(train_set, val_set, train_dataloader, val_dataloader, config, model, d
                     val_acc += (val_pred == labels).sum().item()
                     val_loss += loss.item()
         
-        # print the info of one epoch
+        # print/record the info of one epoch
         print('[{:03d}/{:03d}] Train Acc: {:3.6f} Loss: {:3.6f} | Val Acc: {:3.6f} Loss: {:3.6f}'.format(
             epoch + 1, config['num_epoch'], 
             train_acc / len(train_set), train_loss / len(train_dataloader), 
             val_acc / len(val_set),     val_loss / len(val_dataloader)))
-        
-        # record the info into tensorboard
         writer.add_scalar('Train Acc', train_acc / len(train_set), epoch)
         writer.add_scalar('Train Loss', train_loss / len(train_dataloader), epoch)
         writer.add_scalar('Val Acc', val_acc / len(val_set), epoch)
