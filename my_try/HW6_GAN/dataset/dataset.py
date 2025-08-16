@@ -1,4 +1,6 @@
-# dataset.py -- turn the .jpg files into torch
+# dataset.py -- turn the .jpg files into torch and pack into torch.dataset
+# Le Jiang
+# 2025/8/10
 import torch
 from torch.utils.data import Dataset
 from PIL import Image
