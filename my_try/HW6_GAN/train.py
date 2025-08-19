@@ -10,6 +10,7 @@ from datetime import datetime
 import torchvision
 import logging
 import os
+from utils.seeds import all_seed
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -18,13 +19,16 @@ config = {
     'datapath':'./data/faces',
 
     # train parameters
+    'seeds':666,
     'n_epoch':10,
     'z_dim':100,
     'lr':0.0001,
     'n_critic': 1,
+
     # model checkpoints save path
-    'best_checkpoints':f'./checkpoints/{timestamp}/best',
-    'latest_checkpoints':f'./checkpoints/{timestamp}/latest',
+    'checkpoints_dir':f'./checkpoints/{timestamp}',
+    'g_checkpoints':f'./checkpoints/{timestamp}/g',
+    'd_checkpoints':f'./checkpoints/{timestamp}/d',
 
     # train log save path
     'log_dir':f'./logs/{timestamp}',
@@ -32,10 +36,13 @@ config = {
     'log_d':f'./logs/{timestamp}/d.txt',
 }
 
+all_seed(config['seeds'])
 if not os.path.exists(config['log_dir']):
     os.makedirs(config['log_dir'])
-# if not os.path.exists(config['log_d']):
-#     os.makedirs(config['log_d'])
+if not os.path.exists(config['g_checkpoints']):
+    os.makedirs(config['g_checkpoints'])
+if not os.path.exists(config['d_checkpoints']):
+    os.makedirs(config['d_checkpoints'])
 
 g_logger = logging.getLogger('g')
 g_logger.setLevel(logging.INFO)
@@ -95,12 +102,17 @@ def train(dataloader, model_g, model_d, config, device):
 
             steps+=1
         
+        # eval print out imgs
         model_g.eval()
         input = torch.randn(100, config['z_dim']).to(device)
         output = (model_g(input).data+1)/2.0
         filename = os.path.join(config['log_dir'], f'Epoch_{epoch+1:03d}.jpg')
         torchvision.utils.save_image(output, filename, nrow=10)
-        logging.info(f'Save some samples to {filename}.')
+        print(f'Save some samples to {filename}.')
+
+        # save model weights
+        torch.save(model_d.state_dict(), os.path.join(config['d_checkpoints'], f'g_{epoch+1:03d}.pth'))
+        torch.save(model_g.state_dict(), os.path.join(config['g_checkpoints'], f'd_{epoch+1:03d}.pth'))
 
 if __name__ == '__main__':
         
@@ -108,7 +120,7 @@ if __name__ == '__main__':
     from models.gan import Generator, Discriminator
     from torch.utils.data import DataLoader
     dataset = My_Dataset('./data/faces')
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=True, num_workers=0, drop_last=True, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_size=128, shuffle=True, num_workers=0, drop_last=True, pin_memory=True)
     generator = Generator(config['z_dim']).to(device)
     discriminator = Discriminator(3).to(device)
     train(dataloader, generator, discriminator, config, device)
