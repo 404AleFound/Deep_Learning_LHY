@@ -3,7 +3,8 @@ idea/
 vscode/
 
 # 忽略数据集
-my_try/*/data/
+experiments/*/data/
+experiments/*/checkpoints/
 
 # 忽略.pdf文件
 *.pdf
