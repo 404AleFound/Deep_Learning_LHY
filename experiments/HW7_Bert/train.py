@@ -10,42 +10,12 @@ import torch
 from tqdm import tqdm
 from datetime import datetime
 import os
-from utils.utils import all_seed, create_logger
+from utils import all_seed, create_logger, get_cosine_schedule_with_warmup
 
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-config = {
-    'data_train':',.data/ml2022spring-hw7/hw7_train.json',
-    'data_eval':'data/ml2022spring-hw7/hw7_dev.json',
-    'data_test':'data/ml2022spring-hw7/hw7_test.json',
-
-    'lr':0.0001,
-    'n_epoch':10,
-    'batch_size':32,
-
-    'log_dir':f'./logs{timestamp}',
-    'log_train_path':f'./logs/{timestamp}/train.txt',
-    'log_eval_path':f'./logs/{timestamp}/eval.txt',
-    'log_test_path':f'./logs/{timestamp}/test.txt',
-
-    'checkpoints_dir':f'./checkpoints/{timestamp}',
-}
-
-if not os.path.exists(config['log_dir']):
-    os.mkdir(config['log_dir'])
-if not os.path.exists(config['best_checkpoints_dir']):
-    os.mkdir(config['best_checkpoints_dir'])
-if not os.path.exists(config['latest_checkpoints_dir']):
-    os.mkdir(config['latest_checkpoints_dir'])
-
-train_logger = create_logger('train_logger', config['log_train_path'])
-eval_logger = create_logger('eval_logger', config['log_eval_path'])
-test_logger = create_logger('test_logger', config['log_test_path'])
-
-tokenizer = BertTokenizerFast.from_pretrained("bert-base-chinese")
-device = 'cuda' if torch.cuda.is_available() else 'cpu' 
-
-def train(train_dataloader, eval_dataloader, model, config, device):
+def train(train_dataloader, eval_dataloader, model, config, device, train_logger, val_logger):
+    
     optimizer = AdamW(model.parameters(), lr = config['lr'])
+    if config['schedule_flag']:
     step = 0
     train_loss_epoch, train_acc_epoch = 0, 0 
     eval_acc_epoch = 0
@@ -115,6 +85,40 @@ def train(train_dataloader, eval_dataloader, model, config, device):
             
 
 if __name__ == '__main__':
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    config = {
+        # ======================================================
+        'data_train':'.data/ml2022spring-hw7/hw7_train.json',
+        'data_eval':'data/ml2022spring-hw7/hw7_dev.json',
+        'data_test':'data/ml2022spring-hw7/hw7_test.json',
+        'log_dir':f'./logs{timestamp}',
+        'checkpoints_dir':f'./checkpoints/{timestamp}',
+        # ======================================================
+        'lr':1e-4,
+        'seed':6666,
+        'n_epoch':10,
+        'batch_size':32,
+        'weight_decay':1e-4,
+        'warm_steps':1000,
+        'schedule_flag':True,
+        'continue_flag':(False, 0, 0),
+        'clip_flag':False
+        # ======================================================
+    }
+
+    if not os.path.exists(config['log_dir']):
+        os.mkdir(config['log_dir'], mode=0o755)
+    
+    if not os.path.exists(config['checkpoints_dir']):
+        os.mkdir(config['checkpoints_dir'], mode=0o755)
+
+    train_logger = create_logger('train_logger', os.path.join(config['log_dir'], 'train.log'))
+    eval_logger = create_logger('eval_logger', os.path.join(config['log_dir'], 'eval.log'))
+    note_logger = create_logger('note_logger', os.path.join(config['log_dir'], 'note.log'))
+
     train_dataset = My_Dataset('./data/ml2022spring-hw7/hw7_train.json', 'train')
     eval_dataset = My_Dataset('./data/ml2022spring-hw7/hw7_dev.json', 'eval')
     test_dataset = My_Dataset('./data/ml2022spring-hw7/hw7_test.json', 'test')
@@ -123,9 +127,8 @@ if __name__ == '__main__':
                                   shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
     eval_dataloader = DataLoader(eval_dataset, batch_size=config['batch_size'], 
                               shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=config['batch_size'], 
-                              shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
 
+    tokenizer = BertTokenizerFast.from_pretrained("bert-base-chinese")
     model = BertForQuestionAnswering.from_pretrained("bert-base-chinese").to(device)
 
-    train(train_dataloader, eval_dataloader, model, config, device)
+    train(train_dataloader, eval_dataloader, model, config, device, train_logger, eval_logger)
