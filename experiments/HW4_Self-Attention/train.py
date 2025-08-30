@@ -7,128 +7,95 @@ from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 import math 
 import os
+from datetime import datetime
+from torchsummary import summary
+import pprint
+
 from dataset.dataset import Voice
 from models.classifier import Classifier
-from utils.utils import all_seed
-from torchsummary import summary
+from utils import all_seed, makedirs_, create_logger, get_cosine_schedule_with_warmup
 
-import torch
-from datetime import datetime
-import os
 
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-config = {
-    'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-    'seed': 87,
-    'dataset_dir': "./data/Voxceleb2_Part/",
-    'n_epochs': 100,      
-    'batch_size': 32, 
-    'scheduler_flag': True,
-    'valid_steps': 2000,
-    'warmup_steps': 1000,
-    'learning_rate': 1e-3,          
-    'early_stop': 300,
-    'n_workers': 0,
-
-    'checkpoints_dir': f'./checkpoints/{timestamp}',
-    'best_checkpoints_path': f'./checkpoints/{timestamp}/best_model.ckpt',
-    'latest_checkpoints_path': f'./checkpoints/{timestamp}/latest_model.ckpt',
-
-    'logs_dir': f'./logs/{timestamp}',
-    'log_valid': f'./logs/{timestamp}/log_valid.txt',
-    'log_train': f'./logs/{timestamp}/log_train.txt',
-    'log_note': f'./logs/{timestamp}/log_note.txt',
-}
-
-if not os.path.exists(config['logs_dir']):
-    os.makedirs(config['logs_dir'])
-
-if not os.path.exists(config['checkpoints_dir']):
-    os.makedirs(config['checkpoints_dir'])
-
-def train(train_loader, valid_loader, model, config, device):
+def train(train_loader, valid_loader, model, config, device, train_logger, eval_logger):
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr = config['learning_rate'])
 
+    if config['continue_flag'][0]:
+        add_epoch, add_step = config['continue_flag'][1], config['continue_flag'][2]
+    else:
+        add_epoch, add_step = 0, 0
+
+    if config['scheduler_flag']:
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer, config['warmup_steps'], len(train_dataloader) * config['n_epochs'])
+
     step, best_loss, early_stop_count = 0, math.inf, 0
-
-    with open(config['log_note'], 'a', encoding='utf-8') as f:
-        f.write(str(model))
-        f.write('\n\n')
-
-        model_summary = summary(model, (400, 40), verbose=0)
-        f.write(str(model_summary))
-        f.write('\n\n')
-        
-        for key, value in config.items():
-            f.write(f'{key}: {value}')
-            f.write('\n')
-        
 
     for epoch in range(config['n_epochs']):
         # start train
-        train_pbar = tqdm(train_loader, position=0, leave=True)
+        train_loss_list, train_acc_list = [],[]
         model.train()
-        train_loss, train_acc = [],[]
-        for x, y in train_pbar:
+        for x, y in tqdm(train_loader):
             optimizer.zero_grad()
-            x, y = x.to(config['device']), y.to(config['device'])
+            x, y = x.to(device), y.to(device)
             pred = model(x) # (batch, classes)
             loss = criterion(pred, y)
             loss.backward()
             optimizer.step()
+            if config['scheduler_flag']:
+                scheduler.step()
             step+=1
             loss_per = loss.detach().item()
             acc_per = (pred.argmax(dim=-1) == y).float().mean(dim=0)
-            train_pbar.set_description(f"Epoch [{epoch+1}/{config['n_epochs']}]")
-            train_pbar.set_postfix({'loss': f'{loss_per:.5f}', 'acc': f'{acc_per:.5f}'})
-            train_loss.append(loss_per)
-            train_acc.append(acc_per)
-
-        # do some records
-        mean_train_loss = sum(train_loss)/len(train_loss)
-        mean_train_acc = sum(train_acc)/len(train_acc)
-        print(f'||TRAIN INFO|| Step: {step}; Loss/train: {mean_train_loss:5f}; Acc/train: {mean_train_acc:5f}')
-        with open(config['log_train'], 'a') as f:
-            f.write(f'Step: {step}; Loss/train: {mean_train_loss:5f}; Acc/train: {mean_train_acc:5f}\n')
+            train_loss_list.append(loss_per)
+            train_acc_list.append(acc_per)
+            if step % 10 == 0:
+                train_logger.info(f'step {add_step+step:03d} train loss {loss_per:3.6f} train acc {acc_per:3.6f}')
+        
+        # record the training info
+        train_loss = sum(train_loss_list) / len(train_loss_list)
+        train_acc = sum(train_acc_list) / (config['batch_size'] * len(train_acc_list))
+        print(f"EPOCH [{add_epoch+epoch+1:03d}|{add_epoch+config['n_epochs']:03d}] TRAIN LOSS {train_loss:3.6f} TRAIN ACC {train_acc:3.6f}")
 
         # start eval
         model.eval()
-        valid_loss, valid_acc = [], []
+        eval_loss_list, eval_acc_list = [], []
         for x, y in valid_loader:
-            x, y = x.to(config['device']), y.to(config['device'])
+            x, y = x.to(device), y.to(device)
             with torch.no_grad():
                 pred = model(x)
                 loss = criterion(pred, y)
                 loss_per = loss.detach().item()
                 acc_per = (pred.argmax(dim=-1) == y).float().mean(dim=0)
-            valid_acc.append(acc_per)
-            valid_loss.append(loss_per)
-
+            eval_loss_list.append(loss_per)
+            eval_acc_list.append(acc_per)
+            
         # do some records
-        mean_valid_loss = sum(valid_loss)/len(valid_loss)
-        mean_valid_acc = sum(valid_acc)/len(valid_acc)
-        print(f'||VALID INFO|| Step: {step}; Loss/valid: {mean_valid_loss:5f}; Acc/valid: {mean_valid_acc:5f}')
-        with open(config['log_valid'], 'a') as f:
-            f.write(f'Step: {step}; Loss/valid: {mean_valid_loss:5f}; Acc/valid: {mean_valid_acc:5f}\n')
+        eval_loss = sum(eval_loss_list) / len(eval_loss_list)
+        eval_acc = sum(eval_acc_list) / (config['batch_size'] * len(eval_acc_list))
+        eval_logger.info(f"EPOCH [{add_epoch+epoch+1:03d}|{add_epoch+config['n_epochs']:03d}] VAL LOSS {eval_loss:3.6f} VAL ACC {eval_acc:3.6f}")
+        print(f"EPOCH [{add_epoch+epoch+1:03d}|{add_epoch+config['n_epochs']:03d}] VAL LOSS {eval_loss:3.6f} VAL ACC {eval_acc:3.6f}")
 
         # save model and early stop
-        if mean_valid_loss < best_loss:
-            best_loss = mean_valid_loss
-            torch.save(model.state_dict(), config['best_checkpoints_path'])
+        if eval_loss < best_loss:
+            best_loss = eval_loss
+            torch.save(model.state_dict(), os.path.join(config['checkpoints_dir'],'best.pt'))
             print('Saving the best model with loss {:.3f}...'.format(best_loss))
             early_stop_count = 0
         else: 
             early_stop_count += 1
 
-        if epoch % 5 == 0:
-            torch.save(model.state_dict(), config['latest_checkpoints_path'])
-            print('Saving the latest model with loss {:.3f}...'.format(mean_valid_loss))
+        if epoch % (config['n_epochs']//10) == 0:
+            torch.save(model.state_dict(), os.path.join(config['checkpoints_dir'],f'epoch_{epoch:03d}.pt'))
+            print(f"Saving the model at epoch {epoch:03d} with loss {eval_loss:.3f}")
 
         if early_stop_count >= config['early_stop']:
             print('\nModel is not improving, so halt the training session.')
             return
+        
+    torch.save(model.state_dict(), os.path.join(config['checkpoints_dir'],f'last.pt'))
+    print(f"saving the last model...")
+    return  
 
 def collate_batch(batch):
     # 将一个batch中的数据合并
@@ -140,36 +107,65 @@ def collate_batch(batch):
     return features, torch.FloatTensor(labels).long()
 
 if __name__ =='__main__':
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    config = {
+        # =============== data folder ===============
+        'data_dir': './data/Voxceleb2_Part/',
+        # -------------------------------------------
+
+        # ============= recorder folder =============
+        'recorder_dir': f'./recorders/{timestamp}',
+        'checkpoints_dir': f'./recorders/{timestamp}/checkpoints',
+        'logger_dir': f'./recorders/{timestamp}/loggers',
+        # -------------------------------------------
+
+        # ============== hyperparameter ==============
+        'seed': 6666,
+        'n_epochs': 10,      
+        'batch_size': 32, 
+        'learning_rate': 1e-2,
+        'scheduler_flag': True,
+        'continue_flag': (False, 0 ,0),
+        'warmup_steps': 1000,
+        'early_stop': 50,
+        'n_workers': 0,
+        # ---------------------------------------------
+    }
+
+    makedirs_((config['recorder_dir'], config['checkpoints_dir'], config['logger_dir']))
+
     all_seed(654)
 
-    dataset = Voice(config['dataset_dir'])
+    train_logger =create_logger('train_logger', os.path.join(config['logger_dir'], 'train.log'), show_time=False)
+    eval_logger = create_logger('eval_logger', os.path.join(config['logger_dir'], 'eval.log'), show_time=False)
+    note_logger = create_logger('note_logger', os.path.join(config['logger_dir'], 'note.log'), show_time=True)
+
+    dataset = Voice(config['data_dir'])
 
     trainlen = int(0.8 * len(dataset))
     lengths = [trainlen, len(dataset) - trainlen]
     train_dataset, valid_dataset = random_split(dataset, lengths)
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu',
-    train_dataloader = DataLoader(train_dataset, 
-                                batch_size=config['batch_size'],
-                                shuffle=True,
-                                num_workers=0,
-                                drop_last=True,
-                                pin_memory=True,
-                                collate_fn=collate_batch)
+    train_dataloader = DataLoader(train_dataset, batch_size=config['batch_size'], shuffle=True,
+                                num_workers=0, drop_last=True, pin_memory=True, collate_fn=collate_batch)
 
-    valid_dataloader = DataLoader(valid_dataset, 
-                                batch_size=config['batch_size'],
-                                shuffle=True,
-                                num_workers=0,
-                                drop_last=True,
-                                pin_memory=True,
-                                collate_fn=collate_batch)
+    valid_dataloader = DataLoader(valid_dataset, batch_size=config['batch_size'], shuffle=True,
+                                num_workers=0, drop_last=True, pin_memory=True, collate_fn=collate_batch)
 
-    model = Classifier(
-        input_dim=40,
-        d_model=80,
-        n_spks=600, 
-        dropout=0.1
-    ).to(config['device'])
+    model = Classifier(input_dim=40, d_model=80, n_spks=600, dropout=0.1).to(device)
+    if config['continue_flag'][0]:
+        model.load_state_dict(torch.load(f"checkpoints/{config['continue_flag'][3]}/latest_checkpoint.pt",
+                                             map_location=device))
 
-    train(train_dataloader, valid_dataloader, model, config, device)
+    print(f"DEVICE:{device}")
+    note_logger.info(f"NOTE: \n[USE] Classifier, \n[DO] dropout(0.1), \n[NO] data enhancement")
+    note_logger.info(f"DEVICE:\n{device}")
+    note_logger.info(f"MODEL INFO:\n{str(model)}")
+    note_logger.info(f"FORWARD INFO:\nInput:(1, 400, 40)\n{str(summary(model, (400, 40)))}")
+    note_logger.info(f"CONFIG INFO:\n{pprint.pformat(config, indent=4)}")
+    note_logger.info(f"NUM STEPS PER EPOCH (TRAIN):\n{len(train_dataloader)}")
+
+    train(train_dataloader, valid_dataloader, model, config, device, train_logger, eval_logger)
