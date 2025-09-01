@@ -1,1 +1,1 @@
-from gan import Generator, Discriminator
+from .gan import Generator, Discriminator
